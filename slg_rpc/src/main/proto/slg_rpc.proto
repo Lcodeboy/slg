@@ -1,0 +1,24 @@
+syntax = "proto3";
+package slg.rpc.v1;
+option java_package = "com.slg.rpc.v1";
+option java_multiple_files = true;
+option java_outer_classname = "SlgRpcProtocol";
+option csharp_namespace = "Slg.Rpc.V1";
+
+message BusinessError { string code = 1; string message = 2; }
+
+// 网关核验帧大小、会话和 msg_id 后，将业务正文原样交给 GAME，由该操作的 parser 解析。
+// msg_id 标识操作种类；request_id 标识玩家这一次操作，超时重试时须复用。
+message PlayRequest {
+  uint32 msg_id = 1;
+  string request_id = 2;
+  bytes body = 3;
+}
+message PlayReply {
+  uint32 msg_id = 1;
+  string request_id = 2;
+  // 空的成功消息也要设置 body，使接收方能区分合法空正文与缺少结果。
+  oneof outcome { bytes body = 3; BusinessError error = 4; }
+  int32 status = 5;
+}
+service GameRpc { rpc Play(PlayRequest) returns (PlayReply); }

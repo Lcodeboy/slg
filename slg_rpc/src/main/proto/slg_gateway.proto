@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package slg.rpc.v1;
+option java_package = "com.slg.rpc.v1";
+option java_multiple_files = true;
+option java_outer_classname = "SlgGatewayProtocol";
+option csharp_namespace = "Slg.Rpc.V1";
+
+import "slg_rpc.proto";
+
+// Unity 与网关的应用层帧。在线路上先写 4 字节大端无符号长度，再写序列化后的
+// GatewayFrame。长度只包含 protobuf 消息本体，零长度非法。TCP 分段没有业务含义。
+message GatewayFrame {
+  reserved 4, 5; // 已退役的业务帧号不能复用，防止错版客户端把正文解释为另一种消息。
+  uint32 version = 1; // TCP 应用层协议版本 2。
+  oneof body {
+    GatewayAuth auth = 2;       // 客户端连接或重连后的第一帧。
+    GatewayAuthOk auth_ok = 3;  // 收到后才可发送业务命令。
+    GatewayHeartbeat ping = 6;
+    GatewayHeartbeat pong = 7;  // 原样回显 ping.nonce，不进入 GAME 命令队列。
+    BusinessError error = 8;    // 连接级错误，例如认证失败。处理后结束本连接。
+    PlayRequest play_request = 9;  // 玩法专属请求，正文类型由操作的 msg_id 确定。
+    PlayReply play_reply = 10;     // 同一 msg_id 和 request_id 的成功回包或业务错误。
+  }
+}
+
+// token 由账号登录接口颁发，只通过 TLS 或显式启用的本机测试连接发送。
+message GatewayAuth { string token = 1; }
+message GatewayAuthOk {
+  string account_id = 1;
+  int64 expires_at = 2; // 当前会话失效时间，Unix 秒。
+}
+message GatewayHeartbeat { uint64 nonce = 1; }

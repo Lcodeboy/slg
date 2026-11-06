@@ -1,0 +1,43 @@
+syntax = "proto3";
+package slg.rpc.v1;
+option java_package = "com.slg.rpc.v1";
+option java_multiple_files = true;
+option java_outer_classname = "SlgBattleResultProtocol";
+option csharp_namespace = "Slg.Rpc.V1";
+
+// Worker 与玩家战报共享一份战损定义。玩家只能查到已生效的结果或尚待结算的状态。
+enum BattleTroopKind {
+  BATTLE_TROOP_UNSPECIFIED = 0;
+  BATTLE_INFANTRY = 1;
+  BATTLE_LANCER = 2;
+  BATTLE_MARKSMAN = 3;
+}
+enum BattleOutcome {
+  BATTLE_OUTCOME_UNSPECIFIED = 0;
+  BATTLE_ATTACKER_WIN = 1;
+  BATTLE_DEFENDER_WIN = 2;
+  BATTLE_DRAW = 3;
+}
+message BattleGroupLosses {
+  string group_id = 1;
+  BattleTroopKind kind = 2;
+  uint32 tier = 3;
+  int64 initial_count = 4;
+  int64 survivors = 5;
+  int64 wounded = 6;
+  int64 dead = 7;
+}
+message BattleArmyLosses {
+  string owner_id = 1;
+  repeated BattleGroupLosses groups = 2;
+}
+message BattleComputeReply {
+  string battle_id = 1;
+  string input_hash = 2;
+  string rules_version = 3;
+  int64 seed = 4;
+  uint32 rounds = 5;
+  BattleOutcome outcome = 6;
+  BattleArmyLosses attacker = 7;
+  BattleArmyLosses defender = 8;
+}

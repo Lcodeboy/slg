@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>com.slg</groupId>
+        <artifactId>slg</artifactId>
+        <version>1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>slg_game</artifactId>
+
+    <dependencies>
+        <dependency><groupId>com.slg</groupId><artifactId>slg_rpc</artifactId></dependency>
+        <dependency><groupId>com.slg</groupId><artifactId>slg_core</artifactId></dependency>
+        <dependency><groupId>org.rocksdb</groupId><artifactId>rocksdbjni</artifactId></dependency>
+        <dependency><groupId>com.zaxxer</groupId><artifactId>HikariCP</artifactId></dependency>
+        <dependency><groupId>com.mysql</groupId><artifactId>mysql-connector-j</artifactId><scope>runtime</scope></dependency>
+        <dependency><groupId>com.slg</groupId><artifactId>slg_test_support</artifactId><scope>test</scope></dependency>
+        <dependency><groupId>org.junit.jupiter</groupId><artifactId>junit-jupiter</artifactId><scope>test</scope></dependency>
+    </dependencies>
+    <build>
+        <!-- IT 与部署共用同一份迁移；GAME 运行账号本身没有 DDL 权限。 -->
+        <testResources>
+            <testResource><directory>src/test/resources</directory></testResource>
+            <testResource>
+                <directory>${project.basedir}/../scripts/mysql/schema</directory>
+                <targetPath>mysql/schema</targetPath>
+            </testResource>
+        </testResources>
+    <plugins><plugin>
+        <groupId>org.apache.maven.plugins</groupId><artifactId>maven-shade-plugin</artifactId>
+        <executions><execution><phase>package</phase><goals><goal>shade</goal></goals><configuration>
+            <transformers>
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer"><mainClass>com.slg.game.GameServer</mainClass></transformer>
+            </transformers>
+        </configuration></execution></executions>
+    </plugin></plugins></build>
+
+</project>

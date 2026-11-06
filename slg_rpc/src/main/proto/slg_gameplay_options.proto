@@ -1,0 +1,11 @@
+syntax = "proto3";
+package slg.rpc.v1;
+option java_package = "com.slg.rpc.v1";
+option java_outer_classname = "SlgGameplayOptions";
+option csharp_namespace = "Slg.Rpc.V1";
+
+import "google/protobuf/descriptor.proto";
+
+// 编号在全部玩法之间唯一。发布后保持稳定，不能将旧编号重新用于其他业务。
+// 生成器读取同一个方法上的编号、输入和返回类型，供 Unity 调用和 GAME 分发共同使用。
+extend google.protobuf.MethodOptions { uint32 msg_id = 51001; }

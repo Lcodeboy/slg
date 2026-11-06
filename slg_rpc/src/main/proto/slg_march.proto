@@ -1,0 +1,75 @@
+syntax = "proto3";
+package slg.rpc.v1;
+option java_package = "com.slg.rpc.v1";
+option java_multiple_files = true;
+option java_outer_classname = "SlgMarchProtocol";
+option csharp_namespace = "Slg.Rpc.V1";
+
+import "slg_gameplay_options.proto";
+
+// 这里描述 Unity 可以调用的操作；网络流量仍由 Gateway 转发至 GameRpc.Play。
+// 声明一次即可生成调用方法、消息编号白名单和按类型解析的 GAME 分发代码。
+service MarchCommands {
+  rpc StartMarch(StartMarchReq) returns (StartMarchRsp) { option (msg_id) = 1001; }
+  rpc GetMarch(GetMarchReq) returns (GetMarchRsp) { option (msg_id) = 1002; }
+  rpc RecallMarch(RecallMarchReq) returns (RecallMarchRsp) { option (msg_id) = 1003; }
+}
+
+enum MarchMission {
+  MARCH_MISSION_UNSPECIFIED = 0;
+  MARCH_MISSION_GATHER = 1;
+  MARCH_MISSION_ATTACK_NPC = 2;
+}
+enum TroopType {
+  TROOP_TYPE_UNSPECIFIED = 0;
+  TROOP_TYPE_INFANTRY = 1;
+  TROOP_TYPE_LANCER = 2;
+  TROOP_TYPE_MARKSMAN = 3;
+}
+message TroopGroup {
+  TroopType type = 1;
+  int64 count = 2;  // 每种 0..100000，至少一种为正，同一种兵仅可出现一次。可用兵力由 GAME 校验。
+}
+message HeroSelection { repeated string hero_ids = 1; }
+
+message StartMarchReq {
+  // 原点坐标 0 合法，未填写坐标须能单独报错。
+  optional int32 target_x = 1;
+  optional int32 target_y = 2;
+  optional MarchMission mission = 3;  // 缺省执行采集。
+  optional int32 tier = 4;            // 当前只支持 T1，缺省视为 1。
+  repeated TroopGroup troops = 5;
+  HeroSelection heroes = 6;           // 缺省带默认英雄，显式空列表表示不带英雄。
+}
+enum MarchState {
+  MARCH_STATE_UNSPECIFIED = 0;
+  MARCH_STATE_OUTBOUND = 1;
+  MARCH_STATE_GATHERING = 2;
+  MARCH_STATE_RETURNING = 3;
+  MARCH_STATE_BATTLE_PENDING = 4;
+  MARCH_STATE_COMPLETED = 5;
+}
+// 三个操作共享行军字段。出征和召回回执冻结在提交时，查询返回当前阶段。
+message StartMarchRsp { MarchView march = 1; }
+message GetMarchReq { string march_id = 1; }
+message GetMarchRsp { MarchView march = 1; }
+message RecallMarchReq { string march_id = 1; }
+message RecallMarchRsp { MarchView march = 1; }
+message MarchView {
+  string march_id = 1;
+  string player_id = 2;
+  MarchState state = 3;
+  MarchMission mission = 4;
+  double from_x = 5;
+  double from_y = 6;
+  int32 target_x = 7;
+  int32 target_y = 8;
+  int64 depart_at = 9;   // Unix 毫秒，由服务端时钟确定。
+  int64 arrive_at = 10;  // Unix 毫秒。
+  int32 tier = 11;
+  repeated TroopGroup troops = 12;
+  repeated string hero_ids = 13;
+  string task_id = 14;
+  string rules_version = 15;
+  map<string, int64> cargo = 16;
+}

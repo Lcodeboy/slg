@@ -1,0 +1,33 @@
+syntax = "proto3";
+package slg.rpc.v1;
+option java_package = "com.slg.rpc.v1";
+option java_multiple_files = true;
+option java_outer_classname = "SlgBattleProtocol";
+option csharp_namespace = "Slg.Rpc.V1";
+
+import "slg_battle_result.proto";
+
+message BattleGroupSnapshot {
+  string group_id = 1;
+  BattleTroopKind kind = 2;
+  uint32 tier = 3;
+  int64 count = 4;
+}
+message BattleArmySnapshot {
+  string owner_id = 1;
+  repeated BattleGroupSnapshot groups = 2;
+  double attack_multiplier = 3;
+  double defense_multiplier = 4;
+}
+// GAME 保存的固定输入；Worker 可以在不同机器重复计算。
+message BattleComputeRequest {
+  string battle_id = 1;
+  string input_hash = 2;
+  string rules_version = 3;
+  int64 seed = 4;
+  uint32 max_rounds = 5;
+  BattleArmySnapshot attacker = 6;
+  BattleArmySnapshot defender = 7;
+}
+// 服务间调用，无玩家资产、回执、存储句柄或直接结算接口。
+service BattleWorkerRpc { rpc Compute(BattleComputeRequest) returns (BattleComputeReply); }

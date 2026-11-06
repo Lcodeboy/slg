@@ -1,0 +1,23 @@
+syntax = "proto3";
+package slg.rpc.v1;
+option java_package = "com.slg.rpc.v1";
+option java_multiple_files = true;
+option java_outer_classname = "SlgReportProtocol";
+option csharp_namespace = "Slg.Rpc.V1";
+
+import "slg_gameplay_options.proto";
+import "slg_battle_result.proto";
+
+service BattleReportCommands {
+  rpc GetBattle(GetBattleReq) returns (GetBattleRsp) { option (msg_id) = 1301; }
+}
+message GetBattleReq { string battle_id = 1; }
+enum BattleReportState { REPORT_UNSPECIFIED = 0; REPORT_PENDING = 1; REPORT_SETTLED = 2; }
+message GetBattleRsp {
+  string battle_id = 1;
+  string march_id = 2;
+  BattleReportState state = 3;
+  string rules_version = 4;
+  string input_hash = 5;
+  BattleComputeReply result = 6; // 结算前缺省；结算后包含双方各兵组的完整战损。
+}

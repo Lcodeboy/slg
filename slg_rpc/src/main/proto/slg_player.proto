@@ -1,0 +1,35 @@
+syntax = "proto3";
+package slg.rpc.v1;
+option java_package = "com.slg.rpc.v1";
+option java_multiple_files = true;
+option java_outer_classname = "SlgPlayerProtocol";
+option csharp_namespace = "Slg.Rpc.V1";
+
+import "slg_gameplay_options.proto";
+
+service PlayerCommands {
+  rpc CreatePlayer(CreatePlayerReq) returns (CreatePlayerRsp) { option (msg_id) = 1101; }
+  rpc GetPlayer(GetPlayerReq) returns (GetPlayerRsp) { option (msg_id) = 1102; }
+}
+message CreatePlayerReq { string name = 1; }
+message GetPlayerReq {} // 玩家身份由已鉴权的会话确定。
+message HeroView {
+  string hero_id = 1;
+  optional string assigned_march = 2; // 缺省表示英雄当前空闲。
+}
+message PlayerView {
+  string player_id = 1;
+  string account_id = 2;
+  int32 founding_realm_id = 3;
+  int32 current_realm_id = 4;
+  string name = 5;
+  map<string, int64> troops = 6;
+  repeated HeroView heroes = 7;
+  repeated string active_march_ids = 8;
+  map<string, int64> resources = 9;
+  map<string, int64> wounded = 10;
+  map<string, int64> dead = 11;
+  int64 version = 12; // 该快照对应的已提交玩家版本。
+}
+message CreatePlayerRsp { PlayerView player = 1; }
+message GetPlayerRsp { PlayerView player = 1; }

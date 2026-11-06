@@ -1,0 +1,32 @@
+syntax = "proto3";
+package slg.rpc.v1;
+option java_package = "com.slg.rpc.v1";
+option java_multiple_files = true;
+option java_outer_classname = "SlgUcProtocol";
+option csharp_namespace = "Slg.Rpc.V1";
+
+import "slg_rpc.proto";
+
+message AuthRequest { string username = 1; string password = 2; }
+message EmptyRequest {}
+message LoginSession {
+  string account_id = 1; // 十进制字符串，HTTP 客户端也能精确保存 64 位账号 ID。
+  string token = 2;
+  int64 expires_at = 3; // Unix 秒。
+}
+message AuthReply {
+  int32 status = 1;
+  oneof outcome { LoginSession session = 2; BusinessError error = 3; }
+}
+message RealmInfo { int32 realm_id = 1; string name = 2; string status = 3; }
+message RealmDirectory { repeated RealmInfo realms = 1; }
+message RealmsReply {
+  int32 status = 1;
+  oneof outcome { RealmDirectory directory = 2; BusinessError error = 3; }
+}
+// 注册与登录对同一类会话返回强类型结果。Gateway 仅在 HTTP 边界编码公开的 JSON。
+service AccountRpc {
+  rpc Register(AuthRequest) returns (AuthReply);
+  rpc Login(AuthRequest) returns (AuthReply);
+  rpc ListRealms(EmptyRequest) returns (RealmsReply);
+}

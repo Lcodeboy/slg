@@ -1,0 +1,32 @@
+syntax = "proto3";
+package slg.rpc.v1;
+option java_package = "com.slg.rpc.v1";
+option java_multiple_files = true;
+option java_outer_classname = "SlgReceiptProtocol";
+option csharp_namespace = "Slg.Rpc.V1";
+
+import "slg_gameplay_options.proto";
+import "slg_rpc.proto";
+import "slg_player.proto";
+import "slg_march.proto";
+
+service ReceiptCommands {
+  rpc GetReceipt(GetReceiptReq) returns (GetReceiptRsp) { option (msg_id) = 1201; }
+}
+message GetReceiptReq { string target_request_id = 1; }
+// 只读查询不会创建回执。缺少 receipt 表示尚未查到该请求的持久化决定。
+// 写入成功或业务拒绝的决定都占用日志序号。重试复用原操作的 request_id。
+message GetReceiptRsp {
+  string target_request_id = 1;
+  int64 journal_seq = 2;
+  WriteReceipt receipt = 3;
+}
+message WriteReceipt {
+  uint32 msg_id = 1; // 原写操作的类型；即使失败也保留，以便调用者将拒绝归给正确的请求。
+  oneof outcome {
+    CreatePlayerRsp created = 2;
+    StartMarchRsp started = 3;
+    RecallMarchRsp recalled = 4;
+    BusinessError error = 5;
+  }
+}

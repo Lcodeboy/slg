@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent><groupId>com.slg</groupId><artifactId>slg</artifactId><version>1.0-SNAPSHOT</version></parent>
+  <artifactId>slg_rpc</artifactId>
+  <dependencies>
+    <dependency><groupId>com.slg</groupId><artifactId>slg_core</artifactId></dependency>
+    <dependency><groupId>io.grpc</groupId><artifactId>grpc-netty-shaded</artifactId></dependency>
+    <dependency><groupId>io.grpc</groupId><artifactId>grpc-protobuf</artifactId></dependency>
+    <dependency><groupId>io.grpc</groupId><artifactId>grpc-stub</artifactId></dependency>
+    <dependency><groupId>com.google.protobuf</groupId><artifactId>protobuf-java</artifactId><version>${protobuf.version}</version></dependency>
+    <dependency><groupId>javax.annotation</groupId><artifactId>javax.annotation-api</artifactId><version>1.3.2</version></dependency>
+    <dependency><groupId>org.junit.jupiter</groupId><artifactId>junit-jupiter</artifactId><scope>test</scope></dependency>
+  </dependencies>
+  <build>
+    <extensions><extension><groupId>kr.motd.maven</groupId><artifactId>os-maven-plugin</artifactId><version>1.7.1</version></extension></extensions>
+    <plugins><plugin>
+      <groupId>org.xolstice.maven.plugins</groupId><artifactId>protobuf-maven-plugin</artifactId><version>0.6.1</version>
+      <configuration>
+        <protocArtifact>com.google.protobuf:protoc:${protobuf.version}:exe:${os.detected.classifier}</protocArtifact>
+        <pluginId>grpc-java</pluginId>
+        <pluginArtifact>io.grpc:protoc-gen-grpc-java:${grpc.version}:exe:${os.detected.classifier}</pluginArtifact>
+      </configuration>
+      <executions>
+        <execution>
+          <id>wire-messages</id><goals><goal>compile</goal></goals>
+          <!-- 同一次 protoc 编译同时输出 Java 消息和已校验类型的描述符，路由生成器直接消费后者。 -->
+          <configuration>
+            <writeDescriptorSet>true</writeDescriptorSet>
+            <descriptorSetFileName>gameplay.pb</descriptorSetFileName>
+          </configuration>
+        </execution>
+        <execution>
+          <id>internal-grpc</id><goals><goal>compile-custom</goal></goals>
+          <configuration>
+            <!-- 玩法 service 声明描述 Unity 协议，只有这里列出的内部接口需要 gRPC stub。 -->
+            <includes><include>slg_rpc.proto</include><include>slg_battle.proto</include><include>slg_uc.proto</include></includes>
+          </configuration>
+        </execution>
+        <execution>
+          <id>unity-messages</id><goals><goal>compile-csharp</goal></goals>
+          <configuration>
+            <excludes><exclude>slg_battle.proto</exclude><exclude>slg_uc.proto</exclude></excludes>
+            <outputDirectory>${project.build.directory}/generated-sources/unity</outputDirectory>
+          </configuration>
+        </execution>
+        <execution>
+          <id>test-client-messages</id><goals><goal>compile-python</goal></goals>
+          <configuration>
+            <!-- 压测与故障验收在同一次构建中取得与客户端一致的公共协议。 -->
+            <excludes><exclude>slg_battle.proto</exclude><exclude>slg_uc.proto</exclude></excludes>
+            <outputDirectory>${project.build.directory}/generated-sources/python</outputDirectory>
+          </configuration>
+        </execution>
+      </executions>
+    </plugin>
+    <plugin>
+      <groupId>org.codehaus.mojo</groupId><artifactId>exec-maven-plugin</artifactId><version>3.5.0</version>
+      <executions><execution>
+        <id>gameplay-routes</id><phase>generate-sources</phase><goals><goal>exec</goal></goals>
+        <configuration>
+          <!-- 用项目 JDK 的单文件执行模式，干净检出时无需预编译/安装生成器，也无需 Python 环境。 -->
+          <executable>${java.home}/bin/java</executable>
+          <arguments>
+            <argument>--class-path</argument><classpath/>
+            <argument>${project.basedir}/src/codegen/GameplayCodegen.java</argument>
+            <argument>${project.build.directory}/generated-resources/protobuf/descriptor-sets/gameplay.pb</argument>
+            <argument>${project.build.directory}/generated-sources/protobuf/java</argument>
+            <argument>${project.build.directory}/generated-sources/unity</argument>
+          </arguments>
+        </configuration>
+      </execution></executions>
+    </plugin></plugins>
+  </build>
+</project>

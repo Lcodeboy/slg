@@ -1,0 +1,31 @@
+name: slg-mysql-dev
+
+services:
+  mysql:
+    image: ${SLG_MYSQL_IMAGE:-mysql:8.4}
+    ports:
+      - "127.0.0.1:${SLG_MYSQL_PORT:-13306}:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: ${SLG_MYSQL_ROOT_PASSWORD:?Run scripts/mysql-local.sh prepare first}
+      MYSQL_ROOT_HOST: localhost
+      SLG_UC_DB_PASSWORD: ${SLG_UC_DB_PASSWORD:?Missing account database password}
+      # 允许 stop / status 读取只有 UC 密码的旧配置。start 和 provision 由管理器预检凭证，
+      # 首次建卷的 init 脚本也独立拒绝无效密码。
+      SLG_PROJECTION_DB_PASSWORD: ${SLG_PROJECTION_DB_PASSWORD:-}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_bin
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./scripts/mysql/init:/docker-entrypoint-initdb.d:ro
+      - ./scripts/mysql/schema:/opt/slg-schema:ro
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$SLG_UC_DB_PASSWORD\" mysql --protocol=TCP -h127.0.0.1 -uslg_uc -Dslg_uc --batch --skip-column-names -e 'SELECT 1' >/dev/null 2>&1"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+      start_period: 30s
+    stop_grace_period: 30s
+
+volumes:
+  mysql-data:
