@@ -1,0 +1,26 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="生成 gRPC Java 代码" type="MavenRunConfiguration" factoryName="Maven">
+    <MavenSettings>
+      <option name="myGeneralSettings">
+        <MavenGeneralSettings>
+          <option name="localRepository" value="$PROJECT_DIR$/.cache/m2" />
+          <option name="userSettingsFile" value="$PROJECT_DIR$/.mvn/settings.xml" />
+        </MavenGeneralSettings>
+      </option>
+      <option name="myRunnerParameters">
+        <MavenRunnerParameters>
+          <option name="workingDirPath" value="$PROJECT_DIR$" />
+          <option name="goals">
+            <list>
+              <option value="-pl" />
+              <option value="slg_rpc" />
+              <option value="-am" />
+              <option value="compile" />
+            </list>
+          </option>
+        </MavenRunnerParameters>
+      </option>
+    </MavenSettings>
+    <method v="2" />
+  </configuration>
+</component>
