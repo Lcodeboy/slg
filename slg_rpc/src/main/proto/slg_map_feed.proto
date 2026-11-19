@@ -1,0 +1,85 @@
+syntax = "proto3";
+package slg.rpc.v1;
+option java_package = "com.slg.rpc.v1";
+option java_multiple_files = true;
+option java_outer_classname = "SlgMapFeedProtocol";
+
+import "slg_march.proto";
+import "slg_map.proto";
+
+// GAME 向内部地图消费者提供只读数据。每个请求指定区服和权威数据集身份，防止重连后
+// 在另一区服或同区重建的数据集上复用旧游标；身份不绑定本地卷或数据库连接。
+// 此服务不经过 Unity 的 msg_id 路由。
+service MapFeedRpc {
+  rpc Snapshot(MapSnapshotReq) returns (stream MapSnapshotChunk);
+  rpc Changes(MapChangesReq) returns (MapChangesPage);
+}
+
+message MapSnapshotReq {
+  int32 realm_id = 1;
+  string dataset_id = 2;
+}
+
+// 只投影正在移动的线段，真实坐标来自业务已提交的这一程；中途召回的起点可以是小数。
+// 公开路线不含玩家账户、兵力、英雄、战利品或待办。视野过滤由 AOI 在消费后执行。
+message MapRoute {
+  string march_id = 1;
+  int64 version = 2;  // 同一 march 对象的持久版本，阶段改变后单调递增。
+  MarchState state = 3; // OUTBOUND 或 RETURNING。
+  double from_x = 4;
+  double from_y = 5;
+  int32 target_x = 6;
+  int32 target_y = 7;
+  int64 depart_at = 8; // 本程起点时刻，Unix 毫秒。
+  int64 arrive_at = 9;
+}
+
+// 所有块来自同一个权威存储一致快照。消费者先在临时索引中应用，看到 complete 且流正常结束，
+// 才整体替换索引并从 high_seq 之后追增量。中途断流要丢弃这次重建的半成品。
+message MapSnapshotChunk {
+  int32 realm_id = 1;
+  string dataset_id = 2;
+  int64 high_seq = 3;
+  repeated MapRoute routes = 4;
+  bool complete = 5;
+  repeated MapObjectView objects = 6; // 城市和矿点与 routes 使用同一个一致快照水位。
+}
+
+message MapChangesReq {
+  int32 realm_id = 1;
+  string dataset_id = 2;
+  int64 after_seq = 3;  // 上次处理完整页后保存的连续区服日志序号。
+  int32 limit = 4;      // 单页最多扫描的区服日志条数，包括没有地图变化的日志。
+}
+
+// sequence 是区服日志序号，同一原子批次的多条行军变化可共享它；按整页应用后再发布游标。
+// 军队到达矿点、进入战斗、最终返城等阶段都会移除线段。后续再出发的同一支队伍可以用更高版本恢复线段。
+message MapRouteChange {
+  int64 sequence = 1;
+  string march_id = 2;
+  int64 version = 3;
+  oneof mutation {
+    MapRoute upsert = 4;
+    bool removed = 5; // 只取 true，仍携带 march_id 和 version 以去重迟到的旧事件。
+  }
+}
+
+message MapObjectChange {
+  int64 sequence = 1;
+  string object_id = 2;
+  int64 version = 3;
+  oneof mutation {
+    MapObjectView upsert = 4;
+    bool removed = 5;
+  }
+}
+
+message MapChangesPage {
+  int32 realm_id = 1;
+  string dataset_id = 2;
+  int64 pruned_through = 3; // F：已清理的前缀含 F。请求 after_seq=F 时可从 F+1 续读。
+  int64 high_seq = 4;       // H：该次读取捕获的日志上限，新提交留到之后。
+  int64 through_seq = 5;    // 已连续扫描到的位置，可能小于 H；空 changes 也必须采用此游标。
+  repeated MapRouteChange changes = 6;
+  repeated MapObjectChange object_changes = 7; // 与 changes 同一决定的变更不能被切到两页。
+}

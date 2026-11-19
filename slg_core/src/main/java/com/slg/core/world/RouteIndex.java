@@ -14,7 +14,8 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * 线程安全的内存路线索引，查询整条路线是否经过视野，与部队当前位置的兴趣区域查询相互独立。
  * 地图坐标范围为 [0, mapSize - 1]，几何相交按闭边界并使用 1e-9 的浮点容差。
  * 路线保守登记到所有接触的分块，包括只接触边角的分块；查询先去重候选，再做线段与矩形相交判断。
- * 写操作由权威世界状态的拥有者调用。本类不是持久化存储，不提供删除墓碑或事件重放去重。
+ * 写操作由上层视图更新通道调用；GAME 的权威业务仍自行裁决。本类不是持久化存储，
+ * 不提供删除墓碑或事件重放去重，这些保证由 AOI 的连续游标和对象版本层负责。
  */
 public final class RouteIndex {
     /** 几何比较容差，单位为地图格，防止共享边界因浮点舍入漏检。 */
@@ -104,7 +105,24 @@ public final class RouteIndex {
      * @return 与视野相交的路线，完全位于地图外的视野返回空列表
      */
     public List<MarchRoute> query(Viewport viewport) {
+        return query(viewport, Integer.MAX_VALUE, Integer.MAX_VALUE);
+    }
+
+    /**
+     * 有预算的查询。热点分块不能先构建无界候选集合再检查结果上限，否则小视野也可能耗尽内存。
+     * 超出预算明确拒绝整次查询，不返回看似完整的截断地图。
+     */
+    public List<MarchRoute> query(Viewport viewport, int maxCandidates, int maxResults) {
+        return query(viewport, new QueryBudget(maxCandidates, maxResults));
+    }
+
+    /**
+     * 一个查询可让路线索引与点对象索引共用同一预算。按对象类型各给一份限额会使增加地图类型
+     * 自动放大单次请求成本；此重载让调用方将整个视野作为一份预算，任意类型超限都拒绝整次查询。
+     */
+    public List<MarchRoute> query(Viewport viewport, QueryBudget budget) {
         Objects.requireNonNull(viewport, "viewport");
+        Objects.requireNonNull(budget, "budget");
         if (viewport.maxX() < -EPSILON || viewport.maxY() < -EPSILON
                 || viewport.minX() > mapSize - 1.0 + EPSILON
                 || viewport.minY() > mapSize - 1.0 + EPSILON) return List.of();
@@ -119,19 +137,48 @@ public final class RouteIndex {
             for (int x = minX; x <= maxX; x++) {
                 for (int y = minY; y <= maxY; y++) {
                     Set<String> ids = chunks.get(chunkKey(x, y));
-                    if (ids != null) candidates.addAll(ids);
+                    if (ids != null) for (String id : ids) {
+                        if (candidates.add(id)) budget.candidate();
+                    }
                 }
             }
             List<MarchRoute> visible = new ArrayList<>();
             for (String id : candidates) {
                 MarchRoute route = routes.get(id).route();
-                if (intersects(route.from(), route.to(), viewport)) visible.add(route);
+                if (intersects(route.from(), route.to(), viewport)) {
+                    budget.result();
+                    visible.add(route);
+                }
             }
             visible.sort(Comparator.comparing(MarchRoute::marchId));
             return List.copyOf(visible);
         } finally {
             lock.readLock().unlock();
         }
+    }
+
+    /** 每次查询独享，不跨线程共享；候选按单个索引去重后计数，路线和点对象的身份空间彼此独立。 */
+    public static final class QueryBudget {
+        private final int maxCandidates, maxResults;
+        private int candidates, results;
+        public QueryBudget(int maxCandidates, int maxResults) {
+            if (maxCandidates < 1 || maxResults < 1) throw new IllegalArgumentException("Positive query budgets required");
+            this.maxCandidates = maxCandidates;
+            this.maxResults = maxResults;
+        }
+        public void candidate() {
+            if (candidates == maxCandidates) throw new QueryLimit("Map candidate budget exceeded");
+            candidates++;
+        }
+        public void result() {
+            if (results == maxResults) throw new QueryLimit("Map result budget exceeded");
+            results++;
+        }
+    }
+
+    /** 调用方可以要求缩小视野、降低订阅规模或稍后重试；不能把这个异常当作空地图。 */
+    public static final class QueryLimit extends RuntimeException {
+        public QueryLimit(String message) { super(message); }
     }
 
     /** 返回当前路线数量，同一行军跨多个分块仍只计一次。 */

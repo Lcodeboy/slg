@@ -11,6 +11,7 @@
     <modules>
         <module>slg_test_support</module>
         <module>slg_core</module>
+        <module>slg_aoi</module>
         <module>slg_rpc</module>
         <module>slg_battle</module>
         <module>slg_uc</module>
@@ -27,7 +28,7 @@
         <protobuf.version>3.25.9</protobuf.version>
         <testcontainers.version>2.0.5</testcontainers.version>
         <hikari.version>7.1.0</hikari.version>
-        <rocksdb.version>11.8.1</rocksdb.version>
+        <mybatis.version>3.5.19</mybatis.version>
         <junit.version>5.13.4</junit.version>
     </properties>
     <dependencyManagement>
@@ -36,11 +37,12 @@
             <dependency><groupId>com.fasterxml.jackson</groupId><artifactId>jackson-bom</artifactId><version>${jackson.version}</version><type>pom</type><scope>import</scope></dependency>
             <dependency><groupId>org.junit</groupId><artifactId>junit-bom</artifactId><version>${junit.version}</version><type>pom</type><scope>import</scope></dependency>
             <dependency><groupId>com.slg</groupId><artifactId>slg_core</artifactId><version>${project.version}</version></dependency>
+            <dependency><groupId>com.slg</groupId><artifactId>slg_aoi</artifactId><version>${project.version}</version></dependency>
             <dependency><groupId>io.grpc</groupId><artifactId>grpc-bom</artifactId><version>${grpc.version}</version><type>pom</type><scope>import</scope></dependency>
             <dependency><groupId>com.slg</groupId><artifactId>slg_rpc</artifactId><version>${project.version}</version></dependency>
             <dependency><groupId>com.slg</groupId><artifactId>slg_test_support</artifactId><version>${project.version}</version></dependency>
             <dependency><groupId>com.zaxxer</groupId><artifactId>HikariCP</artifactId><version>${hikari.version}</version></dependency>
-            <dependency><groupId>org.rocksdb</groupId><artifactId>rocksdbjni</artifactId><version>${rocksdb.version}</version></dependency>
+            <dependency><groupId>org.mybatis</groupId><artifactId>mybatis</artifactId><version>${mybatis.version}</version></dependency>
             <dependency><groupId>com.mysql</groupId><artifactId>mysql-connector-j</artifactId><version>8.4.0</version></dependency>
         </dependencies>
     </dependencyManagement>

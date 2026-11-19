@@ -1,0 +1,14 @@
+syntax = "proto3";
+package slg.rpc.v1;
+option java_package = "com.slg.rpc.v1";
+option java_multiple_files = true;
+option java_outer_classname = "SlgAoiProtocol";
+
+import "slg_map.proto";
+
+// 当前与 GameRpc 监听于同一个 GAME 进程，入口及预算独立。
+// 未来拆进程只改变 Gateway 的目标地址，不改变 Unity 地图协议和消费水位语义。
+service MapRpc {
+  rpc Query(MapQueryRequest) returns (MapQueryReply);
+  rpc Watch(MapWatchRequest) returns (stream MapViewUpdate);
+}

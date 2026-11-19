@@ -150,7 +150,7 @@ class RouteIndexTest {
         assertThrows(IllegalArgumentException.class, () -> new Point(Double.NaN, 1));
         assertThrows(IllegalArgumentException.class, () -> new Viewport(3, 0, 2, 10));
         assertThrows(IllegalArgumentException.class, () -> new RouteIndex(1200, 0));
-        assertThrows(IllegalArgumentException.class, () -> new MarchRoute("a", "p", new Point(0, 0), new Point(1, 1), 1, 1, 1));
+        assertThrows(IllegalArgumentException.class, () -> new MarchRoute("a", new Point(0, 0), new Point(1, 1), 1, 1, 1));
         RouteIndex index = new RouteIndex(1200, 32);
         assertThrows(IllegalArgumentException.class, () -> index.upsert(route("outside", new Point(1200, 0), new Point(1, 1), 1)));
         MarchRoute route = route("time", new Point(0, 0), new Point(100, 100), 1);
@@ -164,6 +164,6 @@ class RouteIndexTest {
     }
 
     private static MarchRoute route(String id, Point from, Point to, long version) {
-        return new MarchRoute(id, "player", from, to, 0, 1_000, version);
+        return new MarchRoute(id, from, to, 0, 1_000, version);
     }
 }

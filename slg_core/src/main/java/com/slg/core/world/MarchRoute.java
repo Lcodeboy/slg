@@ -7,19 +7,18 @@ import java.util.Objects;
  * 兵力预留、城市状态与到达结算由游戏领域负责，路线对象本身不修改库存。
  *
  * @param marchId 行军唯一标识，改道时沿用该标识
- * @param playerId 行军所属玩家标识
  * @param from 本段路线起点，单位为地图格
  * @param to 本段路线终点，单位为地图格
  * @param departAt 本段出发时间，UTC 纪元毫秒，不能为负
  * @param arriveAt 本段预计到达时间，UTC 纪元毫秒，必须晚于出发时间
  * @param version 路线的非负版本号，更新已有路线时必须递增
  */
-public record MarchRoute(String marchId, String playerId, Point from, Point to,
+public record MarchRoute(String marchId, Point from, Point to,
                          long departAt, long arriveAt, long version) {
     /** 校验标识、端点与时间先后关系；地图边界由路线索引校验。 */
     public MarchRoute {
-        if (marchId == null || marchId.isBlank() || playerId == null || playerId.isBlank()) {
-            throw new IllegalArgumentException("March and player identifiers are required");
+        if (marchId == null || marchId.isBlank()) {
+            throw new IllegalArgumentException("March identifier is required");
         }
         Objects.requireNonNull(from, "from");
         Objects.requireNonNull(to, "to");

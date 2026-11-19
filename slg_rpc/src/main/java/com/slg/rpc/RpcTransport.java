@@ -14,6 +14,8 @@ import javax.net.ssl.SSLException;
 /** 统一 HTTP/2 通道与 TLS 配置；本地开发明文，生产可用 TLS 或双向证书认证。 */
 public final class RpcTransport {
     public static final int MAX_REQUEST_BYTES = 65_536, MAX_RESPONSE_BYTES = 1_048_576;
+    /** 单条 HTTP/2 连接的传输上限；网关长流池的每连接预算不得超过它。 */
+    public static final int MAX_CONCURRENT_CALLS_PER_CONNECTION = 512;
     private RpcTransport() {}
     public static NettyServerBuilder serverBuilder(InetSocketAddress address) {
         return serverBuilder(address, System.getenv());
@@ -21,7 +23,7 @@ public final class RpcTransport {
     static NettyServerBuilder serverBuilder(InetSocketAddress address, Map<String, String> environment) {
         var builder = NettyServerBuilder.forAddress(address).directExecutor()
                 .maxInboundMessageSize(MAX_REQUEST_BYTES).maxInboundMetadataSize(8192)
-                .maxConcurrentCallsPerConnection(512).permitKeepAliveWithoutCalls(false)
+                .maxConcurrentCallsPerConnection(MAX_CONCURRENT_CALLS_PER_CONNECTION).permitKeepAliveWithoutCalls(false)
                 .permitKeepAliveTime(30, TimeUnit.SECONDS).intercept(RpcMetadata.interceptor());
         String certificate = env(environment, "SLG_RPC_TLS_CERT"), key = env(environment, "SLG_RPC_TLS_KEY"), ca = env(environment, "SLG_RPC_TLS_CA");
         if ((certificate == null) != (key == null)) throw new IllegalArgumentException("RPC TLS certificate and key must be supplied together");

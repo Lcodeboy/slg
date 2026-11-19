@@ -4,7 +4,6 @@ import com.slg.core.auth.TokenService;
 import com.slg.core.http.HttpSupport;
 import com.slg.core.http.RateLimiter;
 import com.slg.rpc.GatewayWire;
-import com.slg.rpc.v1.GatewayFrame;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelInitializer;
@@ -16,12 +15,8 @@ import io.netty.channel.group.DefaultChannelGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
-import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
-import io.netty.handler.codec.LengthFieldPrepender;
 import io.netty.handler.codec.http.HttpObjectAggregator;
 import io.netty.handler.codec.http.HttpServerCodec;
-import io.netty.handler.codec.protobuf.ProtobufDecoder;
-import io.netty.handler.codec.protobuf.ProtobufEncoder;
 import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslContextBuilder;
 import io.netty.handler.ssl.SslProvider;
@@ -79,9 +74,8 @@ public final class GatewayServer implements AutoCloseable {
             tcpListener = listen(tcp, pipeline -> {
                 if (tls != null) pipeline.addLast(tls.newHandler(pipeline.channel().alloc()));
                 // decoder 的长度上限含 4 字节头；超长只读头即拒绝，半包留待后续读取，粘包逐帧投递。
-                pipeline.addLast(new LengthFieldBasedFrameDecoder(GatewayWire.MAX_CLIENT_FRAME_BYTES + 4, 0, 4, 0, 4));
-                pipeline.addLast(new ProtobufDecoder(GatewayFrame.getDefaultInstance()));
-                pipeline.addLast(new LengthFieldPrepender(4), new ProtobufEncoder());
+                pipeline.addLast(new TcpFrameCodec.Framer());
+                pipeline.addLast(new TcpFrameCodec.Decoder(), new TcpFrameCodec.Encoder());
                 // 在拆帧之后计时，零星发送残缺字节不能无限续命。
                 pipeline.addLast(new IdleStateHandler(60, 20, 0));
                 pipeline.addLast(new GameTcpHandler(tokens, upstream, requests, authRequests, settings));

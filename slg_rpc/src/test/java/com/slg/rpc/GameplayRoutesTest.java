@@ -89,7 +89,8 @@ class GameplayRoutesTest {
                 .contains("Handlers::previewMarch)"));
         String unity = Files.readString(dir.resolve("SlgGameplayApi.g.cs"));
         assertTrue(unity.contains("PreviewMarchAsync("));
-        assertTrue(unity.contains("SendTypedAsync(requestId, " + newId + "u, request,"));
+        assertTrue(unity.contains("SendTypedAsync(requestId, WireRoutes.PREVIEW_MARCH, request,"));
+        assertTrue(Files.readString(dir.resolve("SlgWireRoutes.g.cs")).contains("PREVIEW_MARCH = " + newId + "u"));
 
         setMsgId(extra, START);
         assertNotEquals(0, runGenerator(schema, dir));

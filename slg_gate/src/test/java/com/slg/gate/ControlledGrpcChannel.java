@@ -20,19 +20,20 @@ final class ControlledGrpcChannel extends Channel {
             private Listener<RespT> listener;
             private Metadata headers;
             private final CompletableFuture<Void> completion = new CompletableFuture<>();
+            private final AtomicInteger requested = new AtomicInteger();
             @Override public void start(Listener<RespT> listener, Metadata headers) { this.listener = listener; this.headers = headers; }
-            @Override public void request(int count) { }
+            @Override public void request(int count) { requested.addAndGet(count); }
             @Override public void cancel(String message, Throwable cause) { completion.cancel(false); }
             @Override public void halfClose() { }
             @Override public void sendMessage(ReqT request) {
                 @SuppressWarnings("unchecked") Listener<Object> typed = (Listener<Object>) listener;
-                Pending pending = new Pending(request, headers, options, typed, completion);
+                Pending pending = new Pending(request, headers, options, typed, completion, requested);
                 count.incrementAndGet(); requests.add(pending);
             }
         };
     }
     record Pending(Object request, Metadata headers, CallOptions options, ClientCall.Listener<Object> listener,
-                   CompletableFuture<Void> future) {
+                   CompletableFuture<Void> future, AtomicInteger requested) {
         String authorization() { return headers.get(RpcMetadata.AUTHORIZATION); }
         void reply(Object result) throws Exception {
             dispatch(() -> { listener.onMessage(result); listener.onClose(Status.OK, new Metadata()); future.complete(null); });
@@ -40,6 +41,7 @@ final class ControlledGrpcChannel extends Channel {
         void fail(Status status) throws Exception {
             dispatch(() -> { listener.onClose(status, new Metadata()); future.completeExceptionally(status.asRuntimeException()); });
         }
+        void message(Object value) throws Exception { dispatch(() -> listener.onMessage(value)); }
         private void dispatch(Runnable work) throws Exception {
             CompletableFuture<Void> delivered = new CompletableFuture<>();
             options.getExecutor().execute(() -> {

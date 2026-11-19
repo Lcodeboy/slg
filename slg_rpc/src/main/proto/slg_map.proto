@@ -1,0 +1,85 @@
+syntax = "proto3";
+package slg.rpc.v1;
+option java_package = "com.slg.rpc.v1";
+option java_multiple_files = true;
+option java_outer_classname = "SlgMapProtocol";
+option csharp_namespace = "Slg.Rpc.V1";
+
+import "slg_rpc.proto";
+import "slg_march.proto";
+import "slg_gameplay_options.proto";
+
+// 地图控制和玩法共享 msgId 注册机制，但使用 AOI 独立入口与预算。
+// Watch 的成功响应只表示订阅已接受，完整视野随后由 MapViewUpdate 首次快照推送。
+service MapApi {
+  rpc MapQuery(MapQueryRequest) returns (MapQueryReply) { option (msg_id) = 2001; option (route_domain) = AOI; }
+  rpc MapWatch(MapWatchRequest) returns (MapWatchReply) { option (msg_id) = 2002; option (route_domain) = AOI; }
+  rpc MapCancel(MapWatchCancel) returns (MapCancelReply) { option (msg_id) = 2003; option (route_domain) = AOI; }
+}
+message MapViewport { double min_x = 1; double min_y = 2; double max_x = 3; double max_y = 4; }
+message MapRouteView {
+  string march_id = 1;
+  int64 version = 2;
+  MarchState state = 3;
+  double from_x = 4;
+  double from_y = 5;
+  int32 target_x = 6;
+  int32 target_y = 7;
+  int64 depart_at = 8;
+  int64 arrive_at = 9;
+}
+// 点对象与行军线段共用视野水位，但使用独立命名空间，不能用坐标代替城市身份。
+// 当前城市位置来自 GAME 的城址规则；迁城/多格占地上线后仍由 GAME 决定位置，AOI 只读取。
+message MapCityView { string player_id = 1; string name = 2; }
+message MapResourceSiteView {
+  string resource_type = 1; // 当前采集规则为 WOOD，不暴露部队、货物或私有任务。
+  string occupant_player_id = 2; // 空串表示空闲；占用和释放以权威数据集已提交状态为准。
+}
+message MapObjectView {
+  string object_id = 1; // city:<永久角色ID> 或 resource:<x>-<y>，两种身份不能相互覆盖。
+  int64 version = 2; // 城市沿用 Player 版本；矿点从未占用时为 0，否则为持久资源对象版本。
+  int32 x = 3;
+  int32 y = 4;
+  oneof detail {
+    MapCityView city = 5;
+    MapResourceSiteView resource_site = 6;
+  }
+}
+message MapQueryRequest {
+  reserved 1; // 请求身份只由固定头承载，正文不再保存第二份可冲突的 ID。
+  MapViewport viewport = 2;
+}
+message MapViewSnapshot {
+  int32 realm_id = 1;
+  string dataset_id = 2; // 权威数据集身份，不是本地卷路径；变更后旧水位失效。
+  string generation = 3; // 一次完整索引发布的身份；重建后变化，不能混用重建前的增量。
+  int64 applied_seq = 4;
+  repeated MapRouteView routes = 5;
+  repeated MapObjectView objects = 6; // 与 routes 来自同一完整视图和 applied_seq。
+}
+message MapQueryReply {
+  reserved 1, 3; // 请求关联/错误统一使用包头；失败时正文解析为 BusinessError。
+  MapViewSnapshot snapshot = 2;
+}
+message MapWatchRequest {
+  string subscription_id = 1; // 每次移动视野换一个新 ID；旧 ID 的迟到包直接丢弃。
+  MapViewport viewport = 2;
+}
+message MapWatchCancel { string subscription_id = 1; }
+message MapWatchReply { string subscription_id = 1; }
+message MapCancelReply { string subscription_id = 1; }
+message MapViewUpdate {
+  option (push_id) = 2101;
+  string subscription_id = 1;
+  int32 realm_id = 2;
+  string dataset_id = 3; // 必须与首次快照相同，不能跨数据集拼接增量。
+  string generation = 4;
+  int64 from_seq = 5;
+  int64 through_seq = 6;
+  bool snapshot = 7; // 首包为完整视野，清掉该视野旧路线和点对象，再一起应用两类 upserts。
+  repeated MapRouteView upserts = 8;
+  repeated string removed_ids = 9;
+  BusinessError error = 10; // 出现错误即终止本订阅；客户端须用新 ID 重新订阅。
+  repeated MapObjectView object_upserts = 11;
+  repeated string removed_object_ids = 12; // 点对象离开视野/删除；矿点释放只更新为空闲，不删除点位。
+}

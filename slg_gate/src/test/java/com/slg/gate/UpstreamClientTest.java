@@ -26,9 +26,9 @@ class UpstreamClientTest {
         try (var client = new UpstreamClient(transport, transport, settings(3000))) {
             var uc = client.request("/api/auth/login", "POST", AUTH, null);
             var ucWire = transport.next();
-            var game = client.play(REQUEST, "test-session");
+            var game = client.play(REQUEST, "test-session", SessionTestService.KEY);
             var gameWire = transport.next();
-            var busy = client.play(REQUEST, "test-session");
+            var busy = client.play(REQUEST, "test-session", SessionTestService.KEY);
             assertEquals("UPSTREAM_BUSY", UpstreamClient.failure(assertThrows(ExecutionException.class,
                     () -> busy.get(1, TimeUnit.SECONDS))).code());
             assertEquals(2, transport.count.get());
@@ -44,7 +44,7 @@ class UpstreamClientTest {
     @Test void typedCommandsCarryProtocolAndBearerAndAllCallsHaveNativeDeadline() throws Exception {
         var transport = new ControlledGrpcChannel();
         try (var client = new UpstreamClient(transport, transport, settings(3000))) {
-            var call = client.play(REQUEST, "test-session");
+            var call = client.play(REQUEST, "test-session", SessionTestService.KEY);
             var wire = transport.next();
             var command = (PlayRequest) wire.request();
             assertEquals(GameplayRoutes.GET_PLAYER, command.getMsgId());
@@ -64,7 +64,7 @@ class UpstreamClientTest {
     @Test void timeoutCancelsOriginalTransportReleasesPermitAndDoesNotReplay() throws Exception {
         var transport = new ControlledGrpcChannel();
         try (var client = new UpstreamClient(transport, transport, settings(150))) {
-            var call = client.play(REQUEST, "test-session");
+            var call = client.play(REQUEST, "test-session", SessionTestService.KEY);
             var wire = transport.next();
             var failure = UpstreamClient.failure(assertThrows(ExecutionException.class, () -> call.get(3, TimeUnit.SECONDS)));
             assertEquals("UPSTREAM_TIMEOUT_UNKNOWN", failure.code());
@@ -74,7 +74,7 @@ class UpstreamClientTest {
             assertEquals(0, metric(client, "game", "inFlight"));
             assertEquals(1, metric(client, "game", "timeouts"));
             assertFalse(call.cancel(true));
-            var next = client.play(REQUEST, "test-session");
+            var next = client.play(REQUEST, "test-session", SessionTestService.KEY);
             transport.next().reply(OK); assertEquals(200, next.get().getStatus());
             assertEquals(0, metric(client, "game", "inFlight"));
         }
@@ -83,13 +83,13 @@ class UpstreamClientTest {
     @Test void disconnectCancellationAndCloseReleaseEachPermitExactlyOnce() throws Exception {
         var transport = new ControlledGrpcChannel();
         try (var client = new UpstreamClient(transport, transport, settings(3000))) {
-            var call = client.play(REQUEST, "test-session");
+            var call = client.play(REQUEST, "test-session", SessionTestService.KEY);
             var wire = transport.next();
             assertTrue(call.cancel(true)); assertFalse(call.cancel(true));
             assertTrue(wire.future().isCancelled());
             assertEquals(0, metric(client, "game", "inFlight"));
             assertEquals(1, metric(client, "game", "cancelled"));
-            var next = client.play(REQUEST, "test-session");
+            var next = client.play(REQUEST, "test-session", SessionTestService.KEY);
             var nextWire = transport.next();
             client.close(); client.close();
             assertTrue(next.isCancelled()); assertTrue(nextWire.future().isCancelled());
@@ -102,13 +102,13 @@ class UpstreamClientTest {
         var transport = new ControlledGrpcChannel();
         try (var client = new UpstreamClient(transport, transport, settings(3000))) {
             for (Status status : new Status[] { Status.UNAVAILABLE, Status.RESOURCE_EXHAUSTED, Status.DEADLINE_EXCEEDED }) {
-                var call = client.play(REQUEST, "test-session");
+                var call = client.play(REQUEST, "test-session", SessionTestService.KEY);
                 transport.next().fail(status);
                 String code = UpstreamClient.failure(assertThrows(ExecutionException.class, call::get)).code();
                 assertTrue(code.endsWith("_UNKNOWN"));
                 assertEquals(0, metric(client, "game", "inFlight"));
             }
-            var call = client.play(REQUEST, "test-session");
+            var call = client.play(REQUEST, "test-session", SessionTestService.KEY);
             transport.next().reply(OK.toBuilder().setStatus(503).setError(BusinessError.newBuilder()
                     .setCode("SERVER_BUSY").setMessage("Not admitted")).build());
             assertEquals(503, call.get().getStatus());
@@ -138,7 +138,7 @@ class UpstreamClientTest {
                 }).build().start();
         String target = "127.0.0.1:" + server.getPort();
         try (var client = new UpstreamClient(target, target, settings(3000))) {
-            var call = client.play(REQUEST, "test-session");
+            var call = client.play(REQUEST, "test-session", SessionTestService.KEY);
             assertEquals("UPSTREAM_UNAVAILABLE_UNKNOWN", UpstreamClient.failure(
                     assertThrows(ExecutionException.class, () -> call.get(5, TimeUnit.SECONDS))).code());
             assertEquals(1, received.get());
@@ -150,7 +150,7 @@ class UpstreamClientTest {
         var transport = new ControlledGrpcChannel();
         var release = new java.util.concurrent.CountDownLatch(1);
         try (var client = new UpstreamClient(transport, transport, settings(5000))) {
-            var call = client.play(REQUEST, "test-session");
+            var call = client.play(REQUEST, "test-session", SessionTestService.KEY);
             var wire = transport.next();
             // 暂停真实回调池并填满队列，触发执行器拒绝；不依赖线程调度快慢碰撞。
             var poolField = UpstreamClient.class.getDeclaredField("callbacks");
@@ -183,7 +183,7 @@ class UpstreamClientTest {
 
             release.countDown();
             assertTrue(drained.await(2, TimeUnit.SECONDS));
-            var next = client.play(REQUEST, "test-session");
+            var next = client.play(REQUEST, "test-session", SessionTestService.KEY);
             assertEquals(1, metric(client, "game", "inFlight"), "A rejected callback must not return its permit twice");
             transport.next().reply(OK);
             assertEquals(200, next.get().getStatus());
@@ -196,7 +196,7 @@ class UpstreamClientTest {
         var transport = new ControlledGrpcChannel();
         var release = new java.util.concurrent.CountDownLatch(1);
         try (var client = new UpstreamClient(transport, transport, settings(5000))) {
-            var call = client.play(REQUEST, "test-session");
+            var call = client.play(REQUEST, "test-session", SessionTestService.KEY);
             var wire = transport.next();
             var poolField = UpstreamClient.class.getDeclaredField("callbacks");
             poolField.setAccessible(true);

@@ -34,13 +34,13 @@
           <id>internal-grpc</id><goals><goal>compile-custom</goal></goals>
           <configuration>
             <!-- 玩法 service 声明描述 Unity 协议，只有这里列出的内部接口需要 gRPC stub。 -->
-            <includes><include>slg_rpc.proto</include><include>slg_battle.proto</include><include>slg_uc.proto</include></includes>
+            <includes><include>slg_rpc.proto</include><include>slg_battle.proto</include><include>slg_uc.proto</include><include>slg_map_feed.proto</include><include>slg_aoi.proto</include><include>slg_session.proto</include></includes>
           </configuration>
         </execution>
         <execution>
           <id>unity-messages</id><goals><goal>compile-csharp</goal></goals>
           <configuration>
-            <excludes><exclude>slg_battle.proto</exclude><exclude>slg_uc.proto</exclude></excludes>
+            <excludes><exclude>slg_battle.proto</exclude><exclude>slg_uc.proto</exclude><exclude>slg_map_feed.proto</exclude><exclude>slg_aoi.proto</exclude><exclude>slg_session.proto</exclude></excludes>
             <outputDirectory>${project.build.directory}/generated-sources/unity</outputDirectory>
           </configuration>
         </execution>
@@ -48,7 +48,7 @@
           <id>test-client-messages</id><goals><goal>compile-python</goal></goals>
           <configuration>
             <!-- 压测与故障验收在同一次构建中取得与客户端一致的公共协议。 -->
-            <excludes><exclude>slg_battle.proto</exclude><exclude>slg_uc.proto</exclude></excludes>
+            <excludes><exclude>slg_battle.proto</exclude><exclude>slg_uc.proto</exclude><exclude>slg_map_feed.proto</exclude><exclude>slg_aoi.proto</exclude><exclude>slg_session.proto</exclude></excludes>
             <outputDirectory>${project.build.directory}/generated-sources/python</outputDirectory>
           </configuration>
         </execution>

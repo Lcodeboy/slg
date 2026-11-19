@@ -20,6 +20,8 @@ import io.grpc.stub.ClientResponseObserver;
 import io.grpc.stub.MetadataUtils;
 import java.nio.charset.StandardCharsets;
 import java.util.EnumMap;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
@@ -29,14 +31,17 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.LongAdder;
 
 /**
- * 网关唯一的内部调用入口：复用两条 gRPC channel，以 Protobuf 传递消息。
- * UC 和 GAME各有独立在途预算；任何写请求都不自动重试。
+ * 网关唯一的内部调用入口：UC、GAME 业务、地图查询、会话控制各用独立 Channel，地图 Watch 使用固定池。
+ * 同一目标的多个 Watch 连接分摊长期 HTTP/2 stream，池大小不随玩家即时在线数增长；
+ * 查询不借 Watch 槽，池满不影响玩法和会话控制。任何写请求都不自动重试。
  * 取消或超时只结束等待，不证明远端事务未提交，重试必须保持原 requestId 和参数。
  */
 final class UpstreamClient implements AutoCloseable {
     private enum Lane { UC, GAME }
     private final Channel uc, game;
-    private final boolean ownsChannels;
+    private final MapUpstreamClient maps;
+    private final SessionUpstreamClient sessions;
+    private final List<ManagedChannel> ownedChannels;
     private final ScheduledThreadPoolExecutor deadlines = new ScheduledThreadPoolExecutor(1,
             Thread.ofPlatform().daemon().name("rpc-deadline").factory());
     private final ThreadPoolExecutor callbacks;
@@ -47,15 +52,30 @@ final class UpstreamClient implements AutoCloseable {
 
     UpstreamClient(String uc, String game) { this(uc, game, GatewaySettings.defaults()); }
     UpstreamClient(String uc, String game, GatewaySettings settings) {
-        this(channels(uc, game), settings);
+        this(channels(uc, game, settings), settings);
     }
-    private UpstreamClient(Channel[] channels, GatewaySettings settings) {
-        this(channels[0], channels[1], settings, true);
+    /**
+     * 仅测试夹具允许让可控制的假 Channel 共用，以观察调用次序；生产构造始终创建独立查询与 Watch 池。
+     * Channel 生命周期由测试负责，不能把这个注入入口用于生产连接池配置。
+     */
+    UpstreamClient(Channel uc, Channel game, GatewaySettings settings) { this(uc, game, game, game, settings); }
+    UpstreamClient(Channel uc, Channel game, Channel map, GatewaySettings settings) { this(uc, game, map, game, settings); }
+    UpstreamClient(Channel uc, Channel game, Channel map, Channel session, GatewaySettings settings) {
+        this(new Channels(uc, game, map, session, List.of(map), List.of()), settings);
     }
-    /** 测试可注入可控制的 gRPC Channel；生命周期由测试夹具负责。 */
-    UpstreamClient(Channel uc, Channel game, GatewaySettings settings) { this(uc, game, settings, false); }
-    private UpstreamClient(Channel uc, Channel game, GatewaySettings settings, boolean ownsChannels) {
-        this.uc = uc; this.game = game; this.ownsChannels = ownsChannels;
+    private UpstreamClient(Channels channels, GatewaySettings settings) {
+        this.uc = channels.uc(); this.game = channels.game(); this.ownedChannels = channels.owned();
+        SessionUpstreamClient openedSessions = null;
+        try {
+            openedSessions = new SessionUpstreamClient(channels.session(), settings);
+            maps = new MapUpstreamClient(channels.mapQuery(), channels.mapWatches(), settings);
+            sessions = openedSessions;
+        } catch (RuntimeException | Error failure) {
+            if (openedSessions != null) openedSessions.close();
+            ownedChannels.forEach(ManagedChannel::shutdownNow);
+            deadlines.shutdownNow();
+            throw failure;
+        }
         timeoutMillis = settings.rpcTimeoutMillis();
         budgets.put(Lane.UC, new Budget(settings.ucInflight()));
         budgets.put(Lane.GAME, new Budget(settings.gameInflight()));
@@ -66,16 +86,36 @@ final class UpstreamClient implements AutoCloseable {
                 new ArrayBlockingQueue<>(capacity), Thread.ofPlatform().daemon().name("rpc-callback-", 0).factory(),
                 new ThreadPoolExecutor.AbortPolicy());
     }
-    private static Channel[] channels(String uc, String game) {
-        ManagedChannel first = RpcTransport.channel(uc);
-        try { return new Channel[] { first, RpcTransport.channel(game) }; }
-        catch (RuntimeException | Error failure) { first.shutdownNow(); throw failure; }
+    private record Channels(Channel uc, Channel game, Channel mapQuery, Channel session,
+                            List<Channel> mapWatches, List<ManagedChannel> owned) { }
+
+    /** 只在启动时建固定数量的 Channel；任何一条构造失败都回收已建连接，不留下半个池继续接流。 */
+    private static Channels channels(String uc, String game, GatewaySettings settings) {
+        SessionUpstreamClient.requireCapacity(settings.maxConnections());
+        var owned = new ArrayList<ManagedChannel>();
+        try {
+            Channel accounts = openChannel(uc, owned);
+            Channel commands = openChannel(game, owned);
+            Channel queries = openChannel(game, owned);
+            Channel sessions = openChannel(game, owned);
+            var watches = new ArrayList<Channel>();
+            for (int i = 0; i < settings.mapWatchChannels(); i++) watches.add(openChannel(game, owned));
+            return new Channels(accounts, commands, queries, sessions, List.copyOf(watches), List.copyOf(owned));
+        } catch (RuntimeException | Error failure) {
+            owned.forEach(ManagedChannel::shutdownNow);
+            throw failure;
+        }
+    }
+    private static ManagedChannel openChannel(String target, List<ManagedChannel> owned) {
+        ManagedChannel channel = RpcTransport.channel(target);
+        owned.add(channel);
+        return channel;
     }
 
     /** HTTP 只有账号和区服发现；在 UC 回调池内把 Protobuf 结果转换为 HTTP 的 JSON。 */
     CompletableFuture<Reply> request(String path, String method, String body, String token) {
         if ("/api/realms".equals(path) && "GET".equals(method))
-            return invoke(Lane.UC, AccountRpcGrpc.getListRealmsMethod(), EmptyRequest.getDefaultInstance(), token, this::realmsReply);
+            return invoke(Lane.UC, AccountRpcGrpc.getListRealmsMethod(), EmptyRequest.getDefaultInstance(), token, null, this::realmsReply);
         boolean register = "/api/auth/register".equals(path);
         if (!"POST".equals(method) || !(register || "/api/auth/login".equals(path)))
             return invalidHttp(404, "NOT_FOUND", "Endpoint not found");
@@ -94,7 +134,7 @@ final class UpstreamClient implements AutoCloseable {
         if (message.getSerializedSize() > RpcTransport.MAX_REQUEST_BYTES)
             return invalidHttp(413, "PAYLOAD_TOO_LARGE", "RPC request exceeds 64 KiB");
         return invoke(Lane.UC, register ? AccountRpcGrpc.getRegisterMethod() : AccountRpcGrpc.getLoginMethod(),
-                message, null, this::authReply);
+                message, null, null, this::authReply);
     }
 
     private static CompletableFuture<Reply> invalidHttp(int status, String code, String message) {
@@ -134,8 +174,8 @@ final class UpstreamClient implements AutoCloseable {
     }
 
     /** 玩法正文透传给 GAME。核对两个标识及结果类型后才回给 Unity，避免把其他命令的回包当作本次成功。 */
-    CompletableFuture<PlayReply> play(PlayRequest request, String token) {
-        return invoke(Lane.GAME, GameRpcGrpc.getPlayMethod(), request, token, reply -> {
+    CompletableFuture<PlayReply> play(PlayRequest request, String token, SessionKey binding) {
+        return invoke(Lane.GAME, GameRpcGrpc.getPlayMethod(), request, token, binding, reply -> {
             checkStatus(reply.getStatus());
             if (reply.getMsgId() != request.getMsgId() || !reply.getRequestId().equals(request.getRequestId())
                     || (!reply.hasBody() && !reply.hasError()) || (reply.hasError() && reply.getError().getCode().isBlank())
@@ -151,7 +191,7 @@ final class UpstreamClient implements AutoCloseable {
 
     /** 两条调用通道共用同一套有界准入、截止时间和取消逻辑。每次只发送一次，结果未知交由原回执判定。 */
     private <T extends MessageLite, W extends MessageLite, R> CompletableFuture<R> invoke(Lane lane, MethodDescriptor<T, W> method,
-            T message, String token, Function<W, R> mapResult) {
+            T message, String token, SessionKey binding, Function<W, R> mapResult) {
         Budget budget = budgets.get(lane);
         if (closed.get() || !budget.permits.tryAcquire()) {
             budget.rejected.increment();
@@ -169,8 +209,7 @@ final class UpstreamClient implements AutoCloseable {
             if (call.finished.get()) return call;
             Channel channel = lane == Lane.GAME ? game : uc;
             if (token != null) {
-                Metadata metadata = new Metadata();
-                metadata.put(RpcMetadata.AUTHORIZATION, "Bearer " + token);
+                Metadata metadata = RpcMetadata.headers(token, binding);
                 channel = ClientInterceptors.intercept(channel, MetadataUtils.newAttachHeadersInterceptor(metadata));
             }
             ClientCalls.asyncUnaryCall(channel.newCall(method, options), message, call.observer(mapResult));
@@ -185,8 +224,13 @@ final class UpstreamClient implements AutoCloseable {
         budgets.forEach((lane, budget) -> result.put(lane.name().toLowerCase(java.util.Locale.ROOT), budget.snapshot()));
         result.put("transport", "grpc");
         result.put("callbackQueue", callbacks.getQueue().size());
+        result.put("map", maps.metrics());
+        result.put("session", sessions.metrics());
         return result;
     }
+    /** 地图与玩法分开传输连接、在途许可、排队和回调线程，只连接同一个 GAME 地址。 */
+    MapUpstreamClient maps() { return maps; }
+    SessionUpstreamClient sessions() { return sessions; }
     static CallFailure failure(Throwable error) {
         Throwable root = error;
         while ((root instanceof CompletionException || root instanceof ExecutionException) && root.getCause() != null)
@@ -196,12 +240,12 @@ final class UpstreamClient implements AutoCloseable {
     }
     @Override public void close() {
         if (!closed.compareAndSet(false, true)) return;
+        maps.close();
+        sessions.close();
         calls.forEach(call -> call.cancel(true));
         deadlines.shutdownNow();
-        if (ownsChannels) {
-            ((ManagedChannel) uc).shutdownNow();
-            ((ManagedChannel) game).shutdownNow();
-        }
+        // 一次发出整个池的关闭，不按连接逐个等待；各流的 onClose 负责归还自己的传输槽。
+        ownedChannels.forEach(ManagedChannel::shutdownNow);
         // 已接收的 gRPC SerializingExecutor 必须排空终态回调；不能用 shutdownNow 丢弃队列。
         // 全部 Call 已取消，observer 会跳过业务转换；后到任务由拒绝分支执行框架清理。
         callbacks.shutdown();

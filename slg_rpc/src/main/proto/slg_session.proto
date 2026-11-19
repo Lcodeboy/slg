@@ -1,0 +1,42 @@
+syntax = "proto3";
+package slg.rpc.v1;
+option java_package = "com.slg.rpc.v1";
+option java_multiple_files = true;
+option java_outer_classname = "SlgSessionProtocol";
+option csharp_namespace = "Slg.Rpc.V1";
+
+// 仅 Gateway 与 GAME 使用的连接控制接口，不是客户端玩法编号。
+// UC token 是登录凭证；此处的绑定是本次 TCP 连接在一个 GAME 实例内的执行资格。
+message SessionPrepareRequest {}
+message SessionPreparation {
+  string game_instance = 1;
+  int64 observed_generation = 2; // 无有效绑定时为 0；Open 必须比较这个值，禁止迟到绑定无条件覆盖。
+  string ticket_id = 3; // 有界短期一次性票据；即使新绑定随后关闭，也不能重放旧 Open 占回空槽。
+}
+message SessionOpenRequest {
+  string game_instance = 1;
+  int64 expected_generation = 2;
+  string attempt_id = 3; // Gateway 为本次认证生成 UUID；传输层不自动重新认证或重试。
+  string ticket_id = 4;
+}
+message SessionKey {
+  string account_id = 1;
+  string game_instance = 2;
+  int64 generation = 3;
+  string binding_id = 4;
+}
+message SessionBinding {
+  SessionKey key = 1;
+  int64 expires_at = 2; // UC 凭证的 Unix 秒到期时间，续租不能延长登录凭证。
+  int32 lease_millis = 3; // 本机单调时钟上的租约；双方各自计算截止，不传输 nanoTime。
+}
+message SessionCheckRequest { repeated SessionKey bindings = 1; } // 每批至多 256 个。
+message SessionCheckReply { repeated SessionKey current = 1; int32 lease_millis = 2; }
+message SessionCloseRequest { SessionKey binding = 1; }
+message SessionCloseReply {}
+service SessionRpc {
+  rpc Prepare(SessionPrepareRequest) returns (SessionPreparation);
+  rpc Open(SessionOpenRequest) returns (SessionBinding);
+  rpc Check(SessionCheckRequest) returns (SessionCheckReply);
+  rpc Close(SessionCloseRequest) returns (SessionCloseReply);
+}

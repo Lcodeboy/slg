@@ -1,9 +1,10 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Globalization;
 using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Google.Protobuf;
@@ -18,46 +19,56 @@ namespace Slg.Unity
         internal GatewayConnectionException(BusinessError error) : base(error.Message) => Code = error.Code;
     }
 
-    /// <summary>网关或 GAME 对指定请求的错误回包。Code 为 RESULT_UNKNOWN 等未知结果时，重试沿用原请求 ID。</summary>
+    /// <summary>
+    /// 指定请求的应用错误。Status 是应用结果分类，不是 HTTP 状态码；Code 是具体业务原因。
+    /// 结果未知时，调用方保存原 requestId 和原请求内容，重连后查回执或原样重试。
+    /// </summary>
     public sealed class GameplayException : Exception
     {
         public string RequestId { get; }
         public string Code { get; }
-        public int Status { get; }
-
-        internal GameplayException(PlayReply reply) : base(reply.Error.Message)
-        {
-            RequestId = reply.RequestId;
-            Code = reply.Error.Code;
-            Status = reply.Status;
-        }
+        public uint Status { get; }
+        internal GameplayException(WireFrame frame, BusinessError error) : base(error.Message)
+        { RequestId = frame.RequestId; Code = error.Code; Status = frame.Status; }
     }
 
-    /// <summary>一条 Unity 原生客户端连接。连接级错误或结果未知时，由调用方决定重登和查回执。</summary>
-    public sealed partial class SlgTcpClient : IDisposable
+    /// <summary>
+    /// 一条原生 Unity TCP/TLS 连接，只有一个读取循环和一个有序写入口。
+    /// 通用消息头负责关联，生成的协议注册表负责类型与路由；GAME、地图查询、地图控制各有独立的有界在途名额。
+    /// </summary>
+    public sealed partial class SlgTcpClient : IDisposable, WireRoutes.IPushHandlers
     {
-        private const uint Version = 2;
-        private const int MaxOutbound = 65536, MaxInbound = 1048592;
+        private enum Lane { Gateway, Game, MapQuery, MapControl }
+        private sealed class PendingCall
+        {
+            internal readonly uint MsgId;
+            internal readonly Lane Lane;
+            internal readonly TaskCompletionSource<WireFrame> Completion =
+                new TaskCompletionSource<WireFrame>(TaskCreationOptions.RunContinuationsAsynchronously);
+            internal PendingCall(uint msgId, Lane lane) { MsgId = msgId; Lane = lane; }
+        }
         private readonly TcpClient socket = new TcpClient { NoDelay = true };
         private readonly SemaphoreSlim writer = new SemaphoreSlim(1, 1);
         private readonly object state = new object();
+        private readonly Dictionary<string, PendingCall> pending = new Dictionary<string, PendingCall>();
         private Stream stream;
         private Exception closeReason;
-        private string pendingId;
-        // 匹配操作编号与请求 ID，避免将另一条写操作的回包误判为成功。
-        private uint pendingMsgId;
-        private TaskCompletionSource<PlayReply> pending;
-
         public string AccountId { get; private set; }
-        public long ExpiresAt { get; private set; } // Unix 秒。
+        public long ExpiresAt { get; private set; }
+        /// <summary>本次认证绑定的 GAME 进程身份，仅供诊断；重启后变化，客户端不能自行选择或上报。</summary>
+        public string GameInstance { get; private set; }
+        /// <summary>GAME 确认的连接代次，仅供诊断；新连接成功后旧连接的命令会被权威入口拒绝。</summary>
+        public long SessionGeneration { get; private set; }
 
         private SlgTcpClient() {}
 
-        /// <summary>校验服务端证书链和 host，再发送登录令牌。由调用方提供连接/鉴权截止时间。</summary>
-        public static Task<SlgTcpClient> ConnectAsync(string host, int port, string token, CancellationToken cancellation)
-        {
-            return OpenAsync(host, port, token, true, cancellation);
-        }
+        /// <summary>
+        /// 校验服务端证书链和 host，再发送可复用的 UC 登录令牌；AUTH_OK 表示 GAME 已建立本连接绑定，
+        /// 不只是 Gateway 本地验签。每次重连创建新客户端，调用方显式选择目标网关和鉴权截止时间。
+        /// 本方法不自动重放写请求、不刷新令牌，也不把旧连接的地图队列迁移到新连接。
+        /// </summary>
+        public static Task<SlgTcpClient> ConnectAsync(string host, int port, string token, CancellationToken cancellation) =>
+            OpenAsync(host, port, token, true, cancellation);
 
         public static Task<SlgTcpClient> ConnectLoopbackForDevelopmentAsync(string host, int port, string token,
             CancellationToken cancellation)
@@ -73,8 +84,6 @@ namespace Slg.Unity
             if (string.IsNullOrEmpty(token)) throw new ArgumentException("Login token required.", nameof(token));
             cancellation.ThrowIfCancellationRequested();
             var client = new SlgTcpClient();
-            // 较旧的 Unity 运行库没有带 CancellationToken 的 ConnectAsync/TLS 握手。
-            // 直接关闭底层 socket 也能中止尚未完成的握手和半包读取。
             using (cancellation.Register(client.socket.Close))
             {
                 try
@@ -87,15 +96,18 @@ namespace Slg.Unity
                         client.stream = secure;
                         await secure.AuthenticateAsClientAsync(host).ConfigureAwait(false);
                     }
-                    await client.WriteAsync(new GatewayFrame { Version = Version, Auth = new GatewayAuth { Token = token } })
-                        .ConfigureAwait(false);
-                    var welcome = await client.ReadAsync().ConfigureAwait(false);
-                    if (welcome.AuthOk == null) throw new InvalidDataException("Expected AUTH_OK.");
-                    client.AccountId = welcome.AuthOk.AccountId;
-                    client.ExpiresAt = welcome.AuthOk.ExpiresAt;
-                    cancellation.ThrowIfCancellationRequested();
+                    // 认证与其他操作使用同一关联和解码路径。认证成功之前不把连接交给玩法调用方。
                     _ = client.ReceiveAsync();
+                    var welcome = await client.AuthAsync(Guid.NewGuid().ToString("D"),
+                        new GatewayAuth { Token = token }, cancellation).ConfigureAwait(false);
+                    client.AcceptSession(welcome);
+                    cancellation.ThrowIfCancellationRequested();
                     return client;
+                }
+                catch (GameplayException failure)
+                {
+                    client.Dispose();
+                    throw new GatewayConnectionException(new BusinessError { Code = failure.Code, Message = failure.Message });
                 }
                 catch
                 {
@@ -106,58 +118,87 @@ namespace Slg.Unity
             }
         }
 
-        // 由生成的玩法方法提供唯一的编号和响应解析器，调用方无需自行填 msgId 或解包。
-        // 先限制消息体，再序列化，避免超大输入在写入 socket 前就分配无界缓冲。
+        private void AcceptSession(GatewayAuthOk welcome)
+        {
+            // 不能将缺字段的旧 AUTH_OK 当成已完成 GAME 绑定；即便 TCP 响应 status=OK，
+            // 不完整的会话身份也必须关连接，而不是允许业务在没有 fencing 的情况下开始。
+            if (!long.TryParse(welcome.AccountId, NumberStyles.None, CultureInfo.InvariantCulture, out long account)
+                || account <= 0 || account.ToString(CultureInfo.InvariantCulture) != welcome.AccountId
+                || welcome.ExpiresAt <= DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+                || !Guid.TryParseExact(welcome.GameInstance, "D", out var instance) || instance == Guid.Empty
+                || instance.ToString("D") != welcome.GameInstance || welcome.SessionGeneration <= 0)
+                throw new InvalidDataException("Gateway authentication omitted a valid GAME session binding.");
+            lock (state)
+            {
+                if (closeReason != null) throw closeReason;
+                AccountId = welcome.AccountId;
+                ExpiresAt = welcome.ExpiresAt;
+                GameInstance = welcome.GameInstance;
+                SessionGeneration = welcome.SessionGeneration;
+            }
+        }
+
+        // 只有生成的 API 调用此入口。公开调用方法的请求/响应类型、编号和执行域均来自同一份 proto。
         private async Task<T> SendTypedAsync<T>(string requestId, uint msgId, IMessage request,
             MessageParser<T> parser, CancellationToken cancellation) where T : IMessage<T>
         {
             cancellation.ThrowIfCancellationRequested();
-            if (string.IsNullOrEmpty(requestId) || !Regex.IsMatch(requestId, @"\A[A-Za-z0-9_-]{1,64}\z"))
-                throw new ArgumentException("Invalid request_id.", nameof(requestId));
+            WireCodec.RequireRequestId(requestId);
             if (request == null) throw new ArgumentNullException(nameof(request));
-            if (request.CalculateSize() > MaxOutbound) throw new ArgumentException("Command too large.", nameof(request));
-            var frame = new GatewayFrame {
-                Version = Version, PlayRequest = new PlayRequest {
-                    MsgId = msgId, RequestId = requestId, Body = request.ToByteString()
-                }
-            };
-            if (frame.CalculateSize() > MaxOutbound) throw new ArgumentException("Command too large.", nameof(frame));
-            var reply = new TaskCompletionSource<PlayReply>(TaskCreationOptions.RunContinuationsAsynchronously);
+            if (!WireRoutes.ClientMayRequest(msgId) || WireRoutes.RequestIdFor(request) != msgId)
+                throw new ArgumentException("The message is not registered as a client request.", nameof(request));
+            if (request.CalculateSize() > WireCodec.MaxClientLength - WireCodec.RemainderHeaderBytes)
+                throw new ArgumentException("Command too large.", nameof(request));
+            Lane lane = WireRoutes.Domain(msgId) == WireDomain.Game ? Lane.Game
+                : WireRoutes.Domain(msgId) == WireDomain.Aoi
+                    ? (msgId == WireRoutes.MAP_QUERY ? Lane.MapQuery : Lane.MapControl) : Lane.Gateway;
+            var call = new PendingCall(msgId, lane);
             lock (state)
             {
                 if (closeReason != null) throw closeReason;
-                if (pending != null) throw new InvalidOperationException("Await the pending command first.");
-                pending = reply;
-                pendingId = requestId;
-                pendingMsgId = msgId;
+                if (pending.ContainsKey(requestId)) throw new InvalidOperationException("This requestId is already in flight.");
+                foreach (var existing in pending.Values)
+                    if (existing.Lane == lane) throw new InvalidOperationException("Await the pending request in this lane first.");
+                pending.Add(requestId, call);
             }
             try
             {
-                using (cancellation.Register(Dispose))
-                {
-                    try { await WriteAsync(frame).ConfigureAwait(false); }
-                    catch (Exception e) { Close(e); }
-                    // 所有 I/O 失败从同一个 Task 返回。异常结果不会被下一条命令误领。
-                    try
+                // 地图查询取消只结束等待，仍保留名额直至迟到回包被唯一接收循环回收；其它请求取消会断开，
+                // 让未确认写操作保留明确的未知结果边界，避免把迟到回包当成下一次操作成功。
+                using (cancellation.Register(() => {
+                    if (lane == Lane.MapQuery)
                     {
-                        PlayReply response = await reply.Task.ConfigureAwait(false);
-                        if (response.OutcomeCase == PlayReply.OutcomeOneofCase.Error) throw new GameplayException(response);
-                        return parser.ParseFrom(response.Body);
+                        lock (state) call.Completion.TrySetCanceled();
                     }
+                    else Dispose();
+                }))
+                {
+                    try { await WriteAsync(new WireFrame(WireFrame.Request, msgId, requestId, 0, request.ToByteString())).ConfigureAwait(false); }
+                    catch (Exception failure) { Close(failure); }
+                    WireFrame response;
+                    try { response = await call.Completion.Task.ConfigureAwait(false); }
+                    catch { cancellation.ThrowIfCancellationRequested(); throw; }
+                    // 到这里已经收到并匹配了确定回包。即使调用方此刻取消，也不能把已确认的业务拒绝
+                    // 降级成 OperationCanceledException；取消只影响等待，不能改写已经收到的业务结果。
+                    if (response.Status != 0) throw new GameplayException(response, ReadError(response));
+                    try { return parser.ParseFrom(response.Body); }
                     catch (InvalidProtocolBufferException invalid)
                     {
-                        // 正文损坏时不放行下一请求，先断开这条已无法确认结果的连接。
-                        var failure = new InvalidDataException("Gateway sent an invalid response.", invalid);
-                        Close(failure);
-                        throw failure;
+                        var failure = new InvalidDataException("Gateway sent an invalid typed response.", invalid);
+                        Close(failure); throw failure;
                     }
-                    catch { cancellation.ThrowIfCancellationRequested(); throw; }
                 }
             }
-            finally { lock (state) { pending = null; pendingId = null; pendingMsgId = 0; } }
+            finally
+            {
+                lock (state)
+                {
+                    if (pending.TryGetValue(requestId, out var current) && current == call && !call.Completion.Task.IsCanceled)
+                        pending.Remove(requestId);
+                }
+            }
         }
 
-        // 只有这个循环读取已认证连接，玩家不操作时也能处理 PING。心跳写入与业务写入共用写锁。
         private async Task ReceiveAsync()
         {
             try
@@ -165,58 +206,69 @@ namespace Slg.Unity
                 while (true)
                 {
                     var frame = await ReadAsync().ConfigureAwait(false);
-                    if (frame.Ping != null)
+                    if (frame.Kind == WireFrame.Request)
                     {
-                        await WriteAsync(new GatewayFrame { Version = Version, Pong = frame.Ping }).ConfigureAwait(false);
-                        continue;
+                        if (!WireRoutes.ServerMayRequest(frame.MsgId)) throw new InvalidDataException("Unexpected server request direction.");
+                        var message = WireRoutes.ParseRequest(frame.MsgId, frame.Body);
+                        if (!(message is GatewayHeartbeatRequest ping)) throw new InvalidDataException("Unsupported server request.");
+                        var pong = new GatewayHeartbeatReply { Nonce = ping.Nonce };
+                        await WriteAsync(new WireFrame(WireFrame.Response, WireRoutes.ResponseIdFor(pong),
+                            frame.RequestId, 0, pong.ToByteString())).ConfigureAwait(false);
                     }
-                    lock (state)
+                    else if (frame.Kind == WireFrame.Push)
                     {
-                        if (pending == null || !MatchesPending(frame.PlayReply) || !pending.TrySetResult(frame.PlayReply))
-                            throw new InvalidDataException("Unexpected gateway reply.");
+                        // 类型分发从同一份注册表生成；新增推送只需新增协议及对应业务接收器，外层帧不再增加字段。
+                        if (!WireRoutes.IsPush(frame.MsgId)) throw new InvalidDataException("Unregistered push msgId.");
+                        WireRoutes.DispatchPush(frame.MsgId, frame.Body, this);
+                    }
+                    else
+                    {
+                        if (!WireRoutes.ClientMayRequest(frame.MsgId)) throw new InvalidDataException("Unexpected response direction.");
+                        if (frame.Status != 0) ReadError(frame);
+                        lock (state)
+                        {
+                            if (!pending.TryGetValue(frame.RequestId, out var call) || call.MsgId != frame.MsgId)
+                                throw new InvalidDataException("Unexpected gateway response identity.");
+                            if (call.Completion.Task.IsCanceled) pending.Remove(frame.RequestId);
+                            else if (!call.Completion.TrySetResult(frame)) throw new InvalidDataException("Duplicate gateway response.");
+                        }
                     }
                 }
             }
-            catch (Exception e) { Close(e); }
+            catch (Exception failure) { Close(failure); }
         }
 
-        // 单请求在途仍需校验关联字段，避免重连、协议版本不一致或服务端误投时把别的回包当做出征成功。
-        // 显式 oneof body 允许成功消息序列化为空；同样的空字节在 outcome 缺失时应当断连。
-        private bool MatchesPending(PlayReply reply)
+        void WireRoutes.IPushHandlers.OnGatewayConnectionError(GatewayConnectionError notification)
         {
-            if (reply == null || reply.MsgId != pendingMsgId || reply.RequestId != pendingId) return false;
-            if (reply.OutcomeCase == PlayReply.OutcomeOneofCase.Body)
-                return reply.Status == 200;
-            // GAME 可以用 200 携带确定的业务拒绝。分支由 outcome 决定，保留 status 和原错误码。
-            return reply.OutcomeCase == PlayReply.OutcomeOneofCase.Error && !string.IsNullOrWhiteSpace(reply.Error.Code)
-                && reply.Status >= 200 && reply.Status <= 599;
+            if (notification.Error == null || string.IsNullOrWhiteSpace(notification.Error.Code))
+                throw new InvalidDataException("Missing connection error details.");
+            throw new GatewayConnectionException(notification.Error);
         }
 
-        private async Task WriteAsync(GatewayFrame frame)
+        private static BusinessError ReadError(WireFrame frame)
         {
-            var length = frame.CalculateSize();
-            if (length <= 0 || length > MaxOutbound) throw new InvalidDataException("Invalid outgoing frame size.");
-            var bytes = new byte[4 + length];
-            bytes[0] = (byte)(length >> 24); bytes[1] = (byte)(length >> 16);
-            bytes[2] = (byte)(length >> 8);  bytes[3] = (byte)length;
-            using (var buffer = new MemoryStream(bytes, 4, length, true)) frame.WriteTo(buffer);
+            var error = BusinessError.Parser.ParseFrom(frame.Body);
+            if (string.IsNullOrWhiteSpace(error.Code)) throw new InvalidDataException("A failure response requires a business error code.");
+            return error;
+        }
+
+        private async Task WriteAsync(WireFrame frame)
+        {
+            // 一次写入口提交完整逻辑帧，不能让两个业务线程分别写头/正文，导致中间插入另一条消息。
+            byte[] bytes = WireCodec.Encode(frame, WireCodec.MaxClientLength);
             await writer.WaitAsync().ConfigureAwait(false);
             try { await stream.WriteAsync(bytes, 0, bytes.Length).ConfigureAwait(false); }
             finally { writer.Release(); }
         }
 
-        private async Task<GatewayFrame> ReadAsync()
+        private async Task<WireFrame> ReadAsync()
         {
-            var header = new byte[4];
-            await ReadFullyAsync(header).ConfigureAwait(false);
-            uint length = ((uint)header[0] << 24) | ((uint)header[1] << 16) | ((uint)header[2] << 8) | header[3];
-            if (length == 0 || length > MaxInbound) throw new InvalidDataException("Invalid incoming frame size.");
-            var body = new byte[(int)length];
-            await ReadFullyAsync(body).ConfigureAwait(false);
-            var frame = GatewayFrame.Parser.ParseFrom(body);
-            if (frame.Version != Version) throw new InvalidDataException("Unsupported gateway frame version.");
-            if (frame.Error != null) throw new GatewayConnectionException(frame.Error);
-            return frame;
+            var lengthBytes = new byte[4];
+            await ReadFullyAsync(lengthBytes).ConfigureAwait(false);
+            int length = WireCodec.ReadLength(lengthBytes, WireCodec.MaxServerLength);
+            var remainder = new byte[length];
+            await ReadFullyAsync(remainder).ConfigureAwait(false);
+            return WireCodec.Decode(remainder, WireCodec.MaxServerLength);
         }
 
         private async Task ReadFullyAsync(byte[] bytes)
@@ -224,9 +276,9 @@ namespace Slg.Unity
             int offset = 0;
             while (offset < bytes.Length)
             {
-                int n = await stream.ReadAsync(bytes, offset, bytes.Length - offset).ConfigureAwait(false);
-                if (n == 0) throw new EndOfStreamException("Gateway disconnected.");
-                offset += n;
+                int count = await stream.ReadAsync(bytes, offset, bytes.Length - offset).ConfigureAwait(false);
+                if (count == 0) throw new EndOfStreamException("Gateway disconnected.");
+                offset += count;
             }
         }
 
@@ -236,12 +288,12 @@ namespace Slg.Unity
             {
                 if (closeReason != null) return;
                 closeReason = reason;
-                pending?.TrySetException(reason);
+                foreach (var call in pending.Values) call.Completion.TrySetException(reason);
+                pending.Clear();
+                mapSubscription?.Fail(reason);
             }
-            socket.Close();
-            stream?.Dispose();
+            socket.Close(); stream?.Dispose();
         }
-
         public void Dispose() => Close(new ObjectDisposedException(nameof(SlgTcpClient)));
     }
 }

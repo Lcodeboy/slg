@@ -6,6 +6,14 @@ option csharp_namespace = "Slg.Rpc.V1";
 
 import "google/protobuf/descriptor.proto";
 
-// 编号在全部玩法之间唯一。发布后保持稳定，不能将旧编号重新用于其他业务。
-// 生成器读取同一个方法上的编号、输入和返回类型，供 Unity 调用和 GAME 分发共同使用。
-extend google.protobuf.MethodOptions { uint32 msg_id = 51001; }
+// 传输协议的唯一注册源：玩法、地图、认证和推送共享编号空间。发布过的编号不可复用。
+// 路由域决定入口与预算；统一封包不表示地图订阅进入玩家命令队列。
+enum RouteDomain { GAME = 0; GATEWAY = 1; AOI = 2; }
+enum RequestOrigin { CLIENT = 0; SERVER = 1; BOTH = 2; }
+extend google.protobuf.MethodOptions {
+  uint32 msg_id = 51001;
+  RouteDomain route_domain = 51002;
+  RequestOrigin request_origin = 51003;
+}
+// 推送直接标在独立消息类型上，新增一种通知无需修改任何公共外层消息。
+extend google.protobuf.MessageOptions { uint32 push_id = 51004; }

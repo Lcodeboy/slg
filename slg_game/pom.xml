@@ -14,10 +14,14 @@
     <dependencies>
         <dependency><groupId>com.slg</groupId><artifactId>slg_rpc</artifactId></dependency>
         <dependency><groupId>com.slg</groupId><artifactId>slg_core</artifactId></dependency>
-        <dependency><groupId>org.rocksdb</groupId><artifactId>rocksdbjni</artifactId></dependency>
+        <!-- AOI 是独立代码边界，随 GAME 同 JVM 运行；该模块不依赖 GAME 或传输协议。 -->
+        <dependency><groupId>com.slg</groupId><artifactId>slg_aoi</artifactId></dependency>
         <dependency><groupId>com.zaxxer</groupId><artifactId>HikariCP</artifactId></dependency>
+        <!-- 仅 MySQL 基础设施使用；领域和应用端口不暴露 MyBatis 类型。 -->
+        <dependency><groupId>org.mybatis</groupId><artifactId>mybatis</artifactId></dependency>
         <dependency><groupId>com.mysql</groupId><artifactId>mysql-connector-j</artifactId><scope>runtime</scope></dependency>
         <dependency><groupId>com.slg</groupId><artifactId>slg_test_support</artifactId><scope>test</scope></dependency>
+        <dependency><groupId>com.slg</groupId><artifactId>slg_gate</artifactId><version>${project.version}</version><scope>test</scope></dependency>
         <dependency><groupId>org.junit.jupiter</groupId><artifactId>junit-jupiter</artifactId><scope>test</scope></dependency>
     </dependencies>
     <build>
@@ -25,8 +29,8 @@
         <testResources>
             <testResource><directory>src/test/resources</directory></testResource>
             <testResource>
-                <directory>${project.basedir}/../scripts/mysql/schema</directory>
-                <targetPath>mysql/schema</targetPath>
+                <directory>${project.basedir}/../scripts/mysql/authority</directory>
+                <targetPath>mysql/authority</targetPath>
             </testResource>
         </testResources>
     <plugins><plugin>

@@ -1,5 +1,4 @@
 syntax = "proto3";
-
 package slg.rpc.v1;
 option java_package = "com.slg.rpc.v1";
 option java_multiple_files = true;
@@ -7,27 +6,48 @@ option java_outer_classname = "SlgGatewayProtocol";
 option csharp_namespace = "Slg.Rpc.V1";
 
 import "slg_rpc.proto";
+import "slg_gameplay_options.proto";
 
-// Unity 与网关的应用层帧。在线路上先写 4 字节大端无符号长度，再写序列化后的
-// GatewayFrame。长度只包含 protobuf 消息本体，零长度非法。TCP 分段没有业务含义。
-message GatewayFrame {
-  reserved 4, 5; // 已退役的业务帧号不能复用，防止错版客户端把正文解释为另一种消息。
-  uint32 version = 1; // TCP 应用层协议版本 2。
-  oneof body {
-    GatewayAuth auth = 2;       // 客户端连接或重连后的第一帧。
-    GatewayAuthOk auth_ok = 3;  // 收到后才可发送业务命令。
-    GatewayHeartbeat ping = 6;
-    GatewayHeartbeat pong = 7;  // 原样回显 ping.nonce，不进入 GAME 命令队列。
-    BusinessError error = 8;    // 连接级错误，例如认证失败。处理后结束本连接。
-    PlayRequest play_request = 9;  // 玩法专属请求，正文类型由操作的 msg_id 确定。
-    PlayReply play_reply = 10;     // 同一 msg_id 和 request_id 的成功回包或业务错误。
+// 这里只定义独立正文。TCP 的 length/version/kind/msgId/requestId/status 使用固定二进制头，
+// 不再套 protobuf 外层。心跳由 Gateway 本地处理；认证需调用内部 SessionRpc，
+// 在 GAME 的账号邮箱激活新绑定后才返回 AUTH_OK，不能仅凭本地验签宣布接管成功。
+service GatewayApi {
+  rpc Auth(GatewayAuth) returns (GatewayAuthOk) {
+    option (msg_id) = 1;
+    option (route_domain) = GATEWAY;
+  }
+  rpc Heartbeat(GatewayHeartbeatRequest) returns (GatewayHeartbeatReply) {
+    option (msg_id) = 2;
+    option (route_domain) = GATEWAY;
+    option (request_origin) = BOTH;
   }
 }
 
-// token 由账号登录接口颁发，只通过 TLS 或显式启用的本机测试连接发送。
+// status 描述受理/结果语义，BusinessError.code 描述业务原因；禁止以 HTTP 状态码替代。
+// OUTCOME_UNKNOWN 绝不表示已回滚。客户端保留同一个 requestId 查询/重试。
+enum WireResultStatus {
+  WIRE_OK = 0;
+  WIRE_REJECTED = 1;
+  WIRE_NOT_ACCEPTED = 2;
+  WIRE_OUTCOME_UNKNOWN = 3;
+  WIRE_PROTOCOL_ERROR = 4;
+  WIRE_AUTH_REQUIRED = 5;
+}
+
+// token 只通过 TLS 或显式启用的本机测试连接发送。
 message GatewayAuth { string token = 1; }
 message GatewayAuthOk {
   string account_id = 1;
-  int64 expires_at = 2; // 当前会话失效时间，Unix 秒。
+  int64 expires_at = 2;
+  string game_instance = 3; // 只供客户端诊断本次连接，客户端不能自报执行资格。
+  int64 session_generation = 4;
 }
-message GatewayHeartbeat { uint64 nonce = 1; }
+message GatewayHeartbeatRequest { uint64 nonce = 1; }
+message GatewayHeartbeatReply { uint64 nonce = 1; }
+
+// 无法关联某次请求的连接级终止通知。它是普通 PUSH，头中的 requestId/status 均为零；
+// 客户端按独立类型关闭连接，而不是把它当作某次业务提交失败。
+message GatewayConnectionError {
+  option (push_id) = 3;
+  BusinessError error = 1;
+}
